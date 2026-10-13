@@ -71,7 +71,7 @@ pub fn parse_npy_f32(path: &Path, bytes: &[u8]) -> Result<NpyArray> {
             return Err(Error::Npy(format!(
                 "{}: unsupported .npy version {v}",
                 path.display()
-            )))
+            )));
         }
     };
     let header_start = if major == 1 { 10 } else { 12 };
@@ -96,29 +96,17 @@ pub fn parse_npy_f32(path: &Path, bytes: &[u8]) -> Result<NpyArray> {
         "|u1" => (1, |b| b[0] as f32),
         "<i2" => (2, |b| i16::from_le_bytes([b[0], b[1]]) as f32),
         "<u2" => (2, |b| u16::from_le_bytes([b[0], b[1]]) as f32),
-        "<f2" => (
-            2,
-            |b| half_bits_to_f32(u16::from_le_bytes([b[0], b[1]])),
-        ),
-        "<i4" => (
-            4,
-            |b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f32,
-        ),
-        "<f4" => (
-            4,
-            |b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]),
-        ),
-        "<f8" => (
-            8,
-            |b| {
-                f64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]) as f32
-            },
-        ),
+        "<f2" => (2, |b| half_bits_to_f32(u16::from_le_bytes([b[0], b[1]]))),
+        "<i4" => (4, |b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f32),
+        "<f4" => (4, |b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])),
+        "<f8" => (8, |b| {
+            f64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]) as f32
+        }),
         other => {
             return Err(Error::Npy(format!(
                 "{}: dtype {other:?} cannot be read as f32",
                 path.display()
-            )))
+            )));
         }
     };
 
@@ -182,8 +170,9 @@ fn parse_header_dict(path: &Path, header: &str) -> Result<(String, bool, Vec<usi
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
             .map(|s| {
-                s.parse::<usize>()
-                    .map_err(|e| Error::Npy(format!("{}: bad shape entry {s:?}: {e}", path.display())))
+                s.parse::<usize>().map_err(|e| {
+                    Error::Npy(format!("{}: bad shape entry {s:?}: {e}", path.display()))
+                })
             })
             .collect::<Result<_>>()?
     };
@@ -264,11 +253,17 @@ mod tests {
     #[test]
     fn reads_f64_and_f16() {
         let bytes = npy_bytes("<f8", "(1,)", &2.5f64.to_le_bytes());
-        assert_eq!(parse_npy_f32(Path::new("x.npy"), &bytes).unwrap().data, vec![2.5]);
+        assert_eq!(
+            parse_npy_f32(Path::new("x.npy"), &bytes).unwrap().data,
+            vec![2.5]
+        );
 
         // 2.5 in binary16 is 0x4100 (exp 16, frac 256).
         let bytes = npy_bytes("<f2", "(1,)", &[0x00, 0x41]);
-        assert_eq!(parse_npy_f32(Path::new("x.npy"), &bytes).unwrap().data, vec![2.5]);
+        assert_eq!(
+            parse_npy_f32(Path::new("x.npy"), &bytes).unwrap().data,
+            vec![2.5]
+        );
     }
 
     #[test]

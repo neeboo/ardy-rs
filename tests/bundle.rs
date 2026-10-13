@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use ardy::io::{preset, FeatureLayout};
+use ardy::io::{FeatureLayout, preset};
 
 fn bundle_dir() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("ARDY_BUNDLE") {
@@ -15,21 +15,23 @@ fn bundle_dir() -> Option<PathBuf> {
         }
         return None;
     }
-    let p = Path::new(env!("CARGO_MANIFEST_DIR")).join(
-        "../ardy-mlx/checkpoints/ARDY-Core-RP-20FPS-Horizon40",
-    );
+    let p = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../ardy-mlx/checkpoints/ARDY-Core-RP-20FPS-Horizon40");
     p.is_dir().then_some(p)
 }
 
 #[test]
 fn contract_constants_and_presets() {
     let core = preset("ARDY-Core-RP-20FPS-Horizon40").expect("core preset");
-    assert_eq!(core, FeatureLayout {
-        nbjoints: 27,
-        fps: 20,
-        horizon: 40,
-        skeleton: "CoreSkeleton27",
-    });
+    assert_eq!(
+        core,
+        FeatureLayout {
+            nbjoints: 27,
+            fps: 20,
+            horizon: 40,
+            skeleton: "CoreSkeleton27",
+        }
+    );
     assert!(preset("not-a-preset").is_none());
 }
 

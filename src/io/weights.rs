@@ -86,15 +86,18 @@ impl WeightMap {
     /// Look up one tensor by name.
     pub fn get(&self, name: &str) -> Result<&WeightTensor> {
         self.tensors.get(name).ok_or_else(|| {
-            Error::Safetensors(format!("no tensor named {name:?} (have {} tensors)", self.tensors.len()))
+            Error::Safetensors(format!(
+                "no tensor named {name:?} (have {} tensors)",
+                self.tensors.len()
+            ))
         })
     }
 
     /// Look up one tensor by name, with caller-supplied context in the error.
     pub fn get_in(&self, context: &str, name: &str) -> Result<&WeightTensor> {
-        self.tensors.get(name).ok_or_else(|| {
-            Error::Safetensors(format!("{context}: no tensor named {name:?}"))
-        })
+        self.tensors
+            .get(name)
+            .ok_or_else(|| Error::Safetensors(format!("{context}: no tensor named {name:?}")))
     }
 
     /// Tensor names sharing a dotted prefix, sorted.
@@ -106,15 +109,12 @@ impl WeightMap {
     }
 }
 
-fn decode_f32(
-    path: &Path,
-    name: &str,
-    dtype: safetensors::Dtype,
-    data: &[u8],
-) -> Result<Vec<f32>> {
+fn decode_f32(path: &Path, name: &str, dtype: safetensors::Dtype, data: &[u8]) -> Result<Vec<f32>> {
     let bail = |msg: String| Error::Safetensors(format!("{}: {name}: {msg}", path.display()));
     let expected = |n: usize, got: usize| {
-        bail(format!("dtype {dtype:?} needs {n} bytes per element, payload has {got} total"))
+        bail(format!(
+            "dtype {dtype:?} needs {n} bytes per element, payload has {got} total"
+        ))
     };
     let mut out = Vec::with_capacity(data.len() / 4);
     match dtype {

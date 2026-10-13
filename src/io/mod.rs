@@ -37,12 +37,7 @@ pub const BODY_BLOCK_NAMES: [&str; 4] = [
 ];
 
 /// `feet.py:23-25,52` — `torch.cat((feet_l, feet_r))` => left first.
-pub const FOOT_CONTACT_ORDER: [&str; 4] = [
-    "left_heel",
-    "left_toe",
-    "right_heel",
-    "right_toe",
-];
+pub const FOOT_CONTACT_ORDER: [&str; 4] = ["left_heel", "left_toe", "right_heel", "right_toe"];
 
 /// `config.yaml:25` — 4 frames per token ("patch size").
 pub const NUM_FRAMES_PER_TOKEN: usize = 4;
@@ -89,7 +84,11 @@ pub const MAX_WINDOW_SECONDS: f64 = 10.0;
 ///
 /// Mirror of `scripts/generate.py:106-115`. This is the *batch* default (the
 /// maximum); the interactive GUI slider defaults to the minimum instead.
-pub fn default_history_frames(fps: f64, gen_horizon_len: usize, num_frames_per_token: usize) -> usize {
+pub fn default_history_frames(
+    fps: f64,
+    gen_horizon_len: usize,
+    num_frames_per_token: usize,
+) -> usize {
     let max_window_len =
         ((MAX_WINDOW_SECONDS * fps) as usize / num_frames_per_token) * num_frames_per_token;
     ((max_window_len - gen_horizon_len) / num_frames_per_token) * num_frames_per_token

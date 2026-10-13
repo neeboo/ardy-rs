@@ -16,7 +16,7 @@
 
 use std::collections::BTreeSet;
 
-use mlx_rs::{ops, Array, Dtype};
+use mlx_rs::{Array, Dtype, ops};
 
 use crate::error::Result;
 use crate::io::weights::{WeightMap, WeightTensor};
@@ -86,7 +86,7 @@ fn array_from_tensor(t: &WeightTensor) -> Array {
 }
 
 /// A scalar f32 array (`shape == []`) for broadcast use.
-fn scalar(v: f32) -> Array {
+pub fn scalar(v: f32) -> Array {
     Array::from_slice(&[v], &[])
 }
 
@@ -193,7 +193,11 @@ pub fn sinusoidal_pe_table(d_model: usize, max_len: usize) -> Vec<f32> {
     let div = pe_div_term(d_model);
     let mut pe = vec![0.0f32; max_len * d_model];
     for pos in 0..max_len {
-        fill_pe_row(&mut pe[pos * d_model..(pos + 1) * d_model], pos as f32, &div);
+        fill_pe_row(
+            &mut pe[pos * d_model..(pos + 1) * d_model],
+            pos as f32,
+            &div,
+        );
     }
     pe
 }
@@ -245,10 +249,10 @@ impl PositionalEncoding {
     /// Build the table (`d_model`, `max_len = 5000` in the reference).
     pub fn new(d_model: usize, max_len: usize) -> Self {
         Self {
-            pe: Array::from_slice(&sinusoidal_pe_table(d_model, max_len), &[
-                max_len as i32,
-                d_model as i32,
-            ]),
+            pe: Array::from_slice(
+                &sinusoidal_pe_table(d_model, max_len),
+                &[max_len as i32, d_model as i32],
+            ),
         }
     }
 
@@ -259,7 +263,7 @@ impl PositionalEncoding {
 
     /// Add `pe[:T]` to every batch element.
     pub fn forward(&self, x: &Array) -> Result<Array> {
-        let t = x.shape()[1] as i32;
+        let t = x.shape()[1];
         let positions = ops::arange::<i32, i32>(None, t, None)?;
         let rows = self.pe.take_axis(&positions, 0)?.expand_dims(0)?;
         Ok(ops::add(x, &rows)?)
@@ -310,7 +314,7 @@ impl LearnedPositionalEncoding {
 
     /// Add the first `T` embedding rows to every batch element.
     pub fn forward(&self, x: &Array) -> Result<Array> {
-        let t = x.shape()[1] as i32;
+        let t = x.shape()[1];
         let positions = ops::arange::<i32, i32>(None, t, None)?;
         let rows = self.weight.take_axis(&positions, 0)?.expand_dims(0)?;
         Ok(ops::add(x, &rows)?)
@@ -380,7 +384,7 @@ pub fn build_additive_mask(
         _ => {
             let mut out = parts[0].clone();
             for extra in &parts[1..] {
-                out = out + extra;
+                out += extra;
             }
             Ok(Some(out))
         }
@@ -452,12 +456,14 @@ impl TransformerEncoderLayer {
     fn sa_block(&self, x: &Array, mask: Option<&Array>) -> Result<Array> {
         let b = x.shape()[0];
         let seq_len = x.shape()[1];
-        let qkv = ops::add(&x.matmul(&self.in_proj_weight.transpose()?)?, &self.in_proj_bias)?;
+        let qkv = ops::add(
+            &x.matmul(&self.in_proj_weight.transpose()?)?,
+            &self.in_proj_bias,
+        )?;
         let qkv = qkv.split_equal(3, -1)?;
         let heads = [b, seq_len, self.nhead as i32, self.head_dim as i32];
-        let shape_heads = |a: &Array| -> Result<Array> {
-            Ok(a.reshape(&heads)?.transpose_axes(&[0, 2, 1, 3])?)
-        };
+        let shape_heads =
+            |a: &Array| -> Result<Array> { Ok(a.reshape(&heads)?.transpose_axes(&[0, 2, 1, 3])?) };
         let attn = sdpa(
             &shape_heads(&qkv[0])?,
             &shape_heads(&qkv[1])?,
@@ -482,7 +488,9 @@ impl TransformerEncoderLayer {
             let x = ops::add(x, &self.sa_block(&self.norm1.forward(x)?, mask)?)?;
             return Ok(ops::add(&x, &self.ff_block(&self.norm2.forward(&x)?)?)?);
         }
-        let x = self.norm1.forward(&ops::add(x, &self.sa_block(x, mask)?)?)?;
+        let x = self
+            .norm1
+            .forward(&ops::add(x, &self.sa_block(x, mask)?)?)?;
         self.norm2.forward(&ops::add(&x, &self.ff_block(&x)?)?)
     }
 }
@@ -594,14 +602,14 @@ mod tests {
         let r1 = row(1);
         for (got, want) in r1
             .iter()
-            .zip([0.841_471_0f32, 0.540_302_3, 0.009_999_834, 0.999_950_05])
+            .zip([0.841_471, 0.540_302_3, 0.009_999_834, 0.999_950_05])
         {
             assert!(close(*got, want, 1e-6), "{got} vs {want}");
         }
         let r2 = row(2);
-        for (got, want) in r2
-            .iter()
-            .zip([0.909_297_4f32, -0.416_146_87, 0.019_998_667, 0.999_800_1])
+        for (got, want) in
+            r2.iter()
+                .zip([0.909_297_4f32, -0.416_146_87, 0.019_998_667, 0.999_800_1])
         {
             assert!(close(*got, want, 1e-6), "{got} vs {want}");
         }
@@ -616,16 +624,18 @@ mod tests {
         let row = |i: usize| &pe[i * d..(i + 1) * d];
         // Row 0 is position 0; row len-1 is position -1; row len-2 is -2.
         let r_neg1 = row(2 * max_len - 2);
-        for (got, want) in r_neg1
-            .iter()
-            .zip([-0.841_471_0f32, 0.540_302_3, -0.009_999_834, 0.999_950_05])
+        for (got, want) in
+            r_neg1
+                .iter()
+                .zip([-0.841_471, 0.540_302_3, -0.009_999_834, 0.999_950_05])
         {
             assert!(close(*got, want, 1e-6), "{got} vs {want}");
         }
         let r_neg2 = row(2 * max_len - 3);
-        for (got, want) in r_neg2
-            .iter()
-            .zip([-0.909_297_4f32, -0.416_146_87, -0.019_998_667, 0.999_800_1])
+        for (got, want) in
+            r_neg2
+                .iter()
+                .zip([-0.909_297_4f32, -0.416_146_87, -0.019_998_667, 0.999_800_1])
         {
             assert!(close(*got, want, 1e-6), "{got} vs {want}");
         }
@@ -635,7 +645,10 @@ mod tests {
         let index = Array::from_slice(&[-1i32, 0, 1], &[3]);
         let out = enc.forward(&x, &index).unwrap();
         let out = out.as_slice::<f32>();
-        for (k, want_row) in [row(2 * max_len - 2), row(0), row(1)].into_iter().enumerate() {
+        for (k, want_row) in [row(2 * max_len - 2), row(0), row(1)]
+            .into_iter()
+            .enumerate()
+        {
             for j in 0..d {
                 assert!(close(out[k * d + j], want_row[j], 1e-6));
             }
@@ -660,9 +673,11 @@ mod tests {
         assert!(close(y[1], -2.5, 1e-6));
 
         // No-bias variant.
-        let lin = Linear::new(&mut store_from(&[("l.weight", vec![2, 3], vec![
-            1.0, 2.0, 3.0, 4.0, 5.0, 6.0,
-        ])]), "l", false)
+        let lin = Linear::new(
+            &mut store_from(&[("l.weight", vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0])]),
+            "l",
+            false,
+        )
         .unwrap();
         let y = lin.forward(&x).unwrap();
         let y = y.as_slice::<f32>();
@@ -737,8 +752,12 @@ mod tests {
         }
 
         // -inf on key 1 -> all weight on key 0 -> out == v[0] everywhere.
-        let mask = additive(&Array::from_slice(&[0.0f32, 1.0], &[1, 1, 1, 2]).as_dtype(Dtype::Bool).unwrap())
-            .unwrap();
+        let mask = additive(
+            &Array::from_slice(&[0.0f32, 1.0], &[1, 1, 1, 2])
+                .as_dtype(Dtype::Bool)
+                .unwrap(),
+        )
+        .unwrap();
         let out = sdpa(&q, &k, &v, Some(&mask)).unwrap();
         let out = out.as_slice::<f32>();
         assert!(close(out[0], 2.0, 1e-6));
@@ -776,9 +795,21 @@ mod tests {
         // D=4, nhead=2, ff=8, one layer; shape-only + finiteness contract.
         let d = 4usize;
         let mut specs: Vec<(String, Vec<usize>, Vec<f32>)> = vec![
-            ("e.self_attn.in_proj_weight".into(), vec![3 * d, d], vec![0.1; 3 * d * d]),
-            ("e.self_attn.in_proj_bias".into(), vec![3 * d], vec![0.0; 3 * d]),
-            ("e.self_attn.out_proj.weight".into(), vec![d, d], vec![0.1; d * d]),
+            (
+                "e.self_attn.in_proj_weight".into(),
+                vec![3 * d, d],
+                vec![0.1; 3 * d * d],
+            ),
+            (
+                "e.self_attn.in_proj_bias".into(),
+                vec![3 * d],
+                vec![0.0; 3 * d],
+            ),
+            (
+                "e.self_attn.out_proj.weight".into(),
+                vec![d, d],
+                vec![0.1; d * d],
+            ),
             ("e.self_attn.out_proj.bias".into(), vec![d], vec![0.0; d]),
             ("e.linear1.weight".into(), vec![8, d], vec![0.1; 8 * d]),
             ("e.linear1.bias".into(), vec![8], vec![0.0; 8]),

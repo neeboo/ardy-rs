@@ -15,9 +15,9 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::error::{Error, Result};
+use crate::io::FeatureLayout;
 use crate::io::npy::NpyArray;
 use crate::io::weights::WeightMap;
-use crate::io::FeatureLayout;
 
 /// A loaded checkpoint bundle: parsed config, weights, and stats access.
 #[derive(Clone, Debug)]
@@ -111,7 +111,11 @@ impl Bundle {
         }
 
         let cfg = &self.config;
-        expect("num_base_steps", cfg.num_base_steps, crate::io::NUM_BASE_STEPS)?;
+        expect(
+            "num_base_steps",
+            cfg.num_base_steps,
+            crate::io::NUM_BASE_STEPS,
+        )?;
         expect("cfg_type", cfg.cfg_type.as_str(), crate::io::CFG_TYPE)?;
         expect(
             "autoencoder.num_frames_per_token",
@@ -310,6 +314,5 @@ fn parse_yaml<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
         path: path.to_path_buf(),
         source,
     })?;
-    serde_yaml::from_str(&text)
-        .map_err(|e| Error::Bundle(format!("{}: {e}", path.display())))
+    serde_yaml::from_str(&text).map_err(|e| Error::Bundle(format!("{}: {e}", path.display())))
 }
