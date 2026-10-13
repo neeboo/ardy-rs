@@ -98,6 +98,9 @@ pub fn parse_npy_f32(path: &Path, bytes: &[u8]) -> Result<NpyArray> {
         "<u2" => (2, |b| u16::from_le_bytes([b[0], b[1]]) as f32),
         "<f2" => (2, |b| half_bits_to_f32(u16::from_le_bytes([b[0], b[1]]))),
         "<i4" => (4, |b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f32),
+        "<i8" => (8, |b| {
+            i64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]) as f32
+        }),
         "<f4" => (4, |b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])),
         "<f8" => (8, |b| {
             f64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]) as f32
@@ -223,14 +226,16 @@ pub fn parse_npz_f32(path: &Path, bytes: &[u8]) -> Result<Vec<(String, NpyArray)
         // `numpy.savez` streams: header sizes are placeholders and a data
         // descriptor trails the payload, so the length comes from the .npy
         // header itself.
+        let header_len = if data_start >= bytes.len() {
+            return Err(Error::Npy(format!(
+                "{}: truncated zip member",
+                path.display()
+            )));
+        } else {
+            npy_member_info(&bytes[data_start..], path)?.0
+        };
         let payload_len = if comp_size == 0xffff_ffff {
-            if data_start >= bytes.len() {
-                return Err(Error::Npy(format!(
-                    "{}: truncated zip member",
-                    path.display()
-                )));
-            }
-            npy_data_len(&bytes[data_start..], path)?
+            header_len
         } else {
             comp_size
         };
@@ -241,13 +246,19 @@ pub fn parse_npz_f32(path: &Path, bytes: &[u8]) -> Result<Vec<(String, NpyArray)
             )));
         }
         let name = bytes[name_start..name_start + name_len].to_vec();
-        let data = parse_npy_f32(path, &bytes[data_start..data_start + payload_len])?;
-        out.push((
-            String::from_utf8(name).map_err(|_| {
-                Error::Npy(format!("{}: npz member name is not UTF-8", path.display()))
-            })?,
-            data,
-        ));
+        let descr = npy_member_info(&bytes[data_start..], path)?.1;
+        // string members are run metadata (the prompt), not tensors; the
+        // f32 image does not exist, so they are skipped rather than fatal
+        let is_string = descr.starts_with("<U") || descr.starts_with("|S");
+        if !is_string {
+            let data = parse_npy_f32(path, &bytes[data_start..data_start + payload_len])?;
+            out.push((
+                String::from_utf8(name).map_err(|_| {
+                    Error::Npy(format!("{}: npz member name is not UTF-8", path.display()))
+                })?,
+                data,
+            ));
+        }
 
         let mut next = data_start + payload_len;
         if flags & 0x08 != 0 {
@@ -270,10 +281,10 @@ pub fn parse_npz_f32(path: &Path, bytes: &[u8]) -> Result<Vec<(String, NpyArray)
     Ok(out)
 }
 
-/// Byte length of the `.npy` payload starting at `bytes[0]`, derived from its
-/// own header (descr + shape) — the zip-independent way to size a streamed
-/// member.
-fn npy_data_len(bytes: &[u8], path: &Path) -> Result<usize> {
+/// Byte length and dtype descr of the `.npy` payload starting at
+/// `bytes[0]`, derived from its own header (descr + shape) — the
+/// zip-independent way to size a streamed member.
+fn npy_member_info(bytes: &[u8], path: &Path) -> Result<(usize, String)> {
     if bytes.len() < 10 || &bytes[..6] != b"\x93NUMPY" {
         return Err(Error::Npy(format!(
             "{}: npz member is not a numpy .npy file",
@@ -305,15 +316,31 @@ fn npy_data_len(bytes: &[u8], path: &Path) -> Result<usize> {
         "|b1" | "?" | "|i1" | "|u1" => 1usize,
         "<i2" | "<u2" | "<f2" => 2,
         "<i4" | "<f4" => 4,
-        "<f8" => 8,
+        "<i8" | "<f8" => 8,
+        // string metadata: `<U23` is 23 four-byte chars, `|S23` 23 bytes
         other => {
-            return Err(Error::Npy(format!(
-                "{}: dtype {other:?} cannot be read as f32",
-                path.display()
-            )));
+            if let Some(n) = other
+                .strip_prefix("<U")
+                .and_then(|s| s.parse::<usize>().ok())
+            {
+                n * 4
+            } else if let Some(n) = other
+                .strip_prefix("|S")
+                .and_then(|s| s.parse::<usize>().ok())
+            {
+                n
+            } else {
+                return Err(Error::Npy(format!(
+                    "{}: dtype {other:?} cannot be read as f32",
+                    path.display()
+                )));
+            }
         }
     };
-    Ok(header_end + shape.iter().product::<usize>() * item_size)
+    Ok((
+        header_end + shape.iter().product::<usize>() * item_size,
+        descr,
+    ))
 }
 
 /// Read one named member of an `.npz` archive (name without the `.npy`
@@ -336,6 +363,52 @@ pub fn parse_npz_member_f32(path: &Path, bytes: &[u8], key: &str) -> Result<NpyA
         .find(|(name, _)| name.strip_suffix(".npy") == Some(key))
         .map(|(_, arr)| arr)
         .ok_or_else(|| Error::Npy(format!("{}: no npz member {key:?}.npy", path.display())))
+}
+
+/// Write an f32 array as an `.npy` v1.0 file (row-major, `<f4`).
+///
+/// The writer counterpart of [`read_npy_f32`], for CLI outputs; the header is
+/// padded to a 64-byte boundary like `numpy.save` does.
+pub fn write_npy_f32(path: &Path, data: &[f32], shape: &[usize]) -> Result<()> {
+    if data.len() != shape.iter().product::<usize>() {
+        return Err(Error::Npy(format!(
+            "{}: shape {shape:?} needs {} values, got {}",
+            path.display(),
+            shape.iter().product::<usize>(),
+            data.len()
+        )));
+    }
+    let shape_str = match shape.len() {
+        0 => "(),".to_string(),
+        1 => format!("({},)", shape[0]),
+        _ => format!(
+            "({}),",
+            shape
+                .iter()
+                .map(|d| d.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    // 10 bytes are spent before the header: magic (6) + version (2) + len (2)
+    let base = format!("{{'descr': '<f4', 'fortran_order': False, 'shape': {shape_str} }}");
+    let pad = 64 - (10 + base.len() + 1) % 64;
+    let header = format!("{}{}\n", base, " ".repeat(pad));
+    let header_len = header.len();
+    debug_assert_eq!((10 + header_len) % 64, 0);
+    debug_assert!(header_len <= u16::MAX as usize);
+
+    let mut bytes = Vec::with_capacity(10 + header_len + data.len() * 4);
+    bytes.extend_from_slice(b"\x93NUMPY\x01\x00");
+    bytes.extend_from_slice(&(header_len as u16).to_le_bytes());
+    bytes.extend_from_slice(header.as_bytes());
+    for v in data {
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    std::fs::write(path, bytes).map_err(|source| Error::Io {
+        path: path.to_path_buf(),
+        source,
+    })
 }
 
 /// IEEE 754 binary16 -> f32, without the `half` crate.
