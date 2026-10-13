@@ -1,0 +1,18 @@
+[package]
+name = "ardy"
+version = "0.0.1"
+edition = "2024"
+license = "Apache-2.0"
+description = "Rust implementation of ARDY motion generation (Apple Silicon, via MLX)"
+repository = "https://github.com/neeboo/ardy-rs"
+readme = "README.md"
+
+[dependencies]
+safetensors = "0.6"
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+serde_json = "1"
+thiserror = "2"
+
+[profile.release]
+lto = "thin"
