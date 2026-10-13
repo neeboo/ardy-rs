@@ -246,22 +246,26 @@ impl<'a> AutoLatentTwostageDenoiser<'a> {
         })
     }
 
+    /// Frames per token (4 for the Core checkpoint).
+    pub fn num_frames_per_token(&self) -> usize {
+        self.num_frames_per_token
+    }
+
+    /// Root block flattened over one token (20 = 5 x 4 frames).
+    pub fn nframe_root_dim(&self) -> usize {
+        self.nframe_root_dim
+    }
+
     /// `get_root_and_latent_body_motion_from_hybrid` (`latent_utils.py:67-76`).
     ///
     /// -> `(root [B, nf, root_block_dim], latent [B, nt, 128])`.
     pub fn split_hybrid(&self, hybrid: &Array) -> Result<(Array, Array)> {
-        let shape = hybrid.shape();
-        let (b, num_tokens, _) = (shape[0] as usize, shape[1] as usize, shape[2] as usize);
-        let num_frames = num_tokens * self.num_frames_per_token;
-        let root = hybrid
-            .try_index((Ellipsis, 0..self.nframe_root_dim as i32))?
-            .reshape(&[
-                b as i32,
-                num_frames as i32,
-                self.motion_rep.root_block_dim() as i32,
-            ])?;
-        let latent = hybrid.try_index((Ellipsis, self.nframe_root_dim as i32..))?;
-        Ok((root, latent))
+        split_hybrid_free(
+            hybrid,
+            self.num_frames_per_token,
+            self.nframe_root_dim,
+            self.motion_rep.root_block_dim(),
+        )
     }
 
     /// `get_hybrid_motion_from_root_and_latent_body_motion`
@@ -468,4 +472,23 @@ pub fn cfg_guided(
 /// Integer scalar helper.
 fn scalar_i(v: i32) -> Array {
     Array::from_slice(&[v], &[])
+}
+
+/// Free-function core of [`AutoLatentTwostageDenoiser::split_hybrid`], for
+/// callers that hold no denoiser -- the sampler's inter-window recenter splits
+/// the *accumulated* history (`generate`, `ardy.py:494`).
+pub fn split_hybrid_free(
+    hybrid: &Array,
+    num_frames_per_token: usize,
+    nframe_root_dim: usize,
+    root_block_dim: usize,
+) -> Result<(Array, Array)> {
+    let shape = hybrid.shape();
+    let (b, num_tokens) = (shape[0], shape[1]);
+    let num_frames = num_tokens * num_frames_per_token as i32;
+    let root = hybrid
+        .try_index((Ellipsis, 0..nframe_root_dim as i32))?
+        .reshape(&[b, num_frames, root_block_dim as i32])?;
+    let latent = hybrid.try_index((Ellipsis, nframe_root_dim as i32..))?;
+    Ok((root, latent))
 }

@@ -6,3 +6,4 @@ pub mod diffusion;
 pub mod fsq;
 pub mod motion_rep;
 pub mod nn;
+pub mod sampler;
