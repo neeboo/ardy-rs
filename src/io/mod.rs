@@ -55,7 +55,7 @@ pub const FSQ_LEVELS: i64 = 64;
 pub const LATENT_BODY_DIM: usize = FSQ_CHANNELS;
 
 /// `local_root_size_dict` (`ardy_motionrep.py:66-70`):
-/// rot_vel[1] + vel[2] + global_root_y[1].
+/// rot_vel(1) + vel(2) + global_root_y(1).
 pub const LOCAL_ROOT_DIM: usize = 4;
 
 /// The root block flattened over a token; 20 for both released skeletons.

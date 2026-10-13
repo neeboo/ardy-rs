@@ -6,7 +6,10 @@
   Interactive Human Motion Generation" (SIGGRAPH 2026). Reference code:
   `nv-tlabs/ardy` @ `693f74d` (Apache-2.0). The MotionCorrection port
   (milestone M6) is derived from that repository's C++
-  `MotionCorrection/AnimProcessing` sources.
+  `MotionCorrection/AnimProcessing` sources; it mirrors one verified upstream
+  quirk (dead velocity weighting in `TrajectoryCorrector::computeDiffMats`,
+  see `README.md`) rather than "fixing" it, so constrained output stays
+  bit-comparable with the reference.
 - **ardy-mlx** — `neeboo/ardy-mlx` (Apache-2.0), the MLX implementation this
   repository ports. Its weight conversion is byte-exact against the reference
   checkpoints (428/428 tensors); this repository consumes those converted

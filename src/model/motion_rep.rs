@@ -183,7 +183,7 @@ fn repeat_diff_at_last(velocity: &Array, lengths: Option<&Array>) -> Result<Arra
 ///
 /// `v[t] = fps * (p[t+1] - p[t])`, zero-padded at the end, then `v[lengths-1]`
 /// is overwritten with `v[lengths-2]` (so the final valid frame repeats the
-/// previous velocity rather than staying zero). See [`repeat_diff_at_last`]
+/// previous velocity rather than staying zero). See `repeat_diff_at_last`
 /// for why `lengths` matters.
 pub fn compute_vel_xyz(positions: &Array, fps: f32, lengths: Option<&Array>) -> Result<Array> {
     let t = positions.shape()[1];

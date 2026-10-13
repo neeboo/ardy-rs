@@ -189,8 +189,8 @@ fn parse_header_dict(path: &Path, header: &str) -> Result<(String, bool, Vec<usi
 /// golden artifacts were written by it, so a bare local-header walk is enough
 /// — no `flate2`. `numpy.savez` also streams its members: the local header
 /// carries `0xffffffff` sizes and a data descriptor trails the payload, so a
-/// member's true length is taken from its own `.npy` header
-/// ([`npy_data_len`]). The central directory is never parsed.
+/// member's true length is taken from its own `.npy` header (parsed by
+/// `npy_member_info`). The central directory is never parsed.
 ///
 /// Member names keep their `.npy` suffix (`"history.npy"`), in archive order.
 pub fn read_npz_f32(path: &Path) -> Result<Vec<(String, NpyArray)>> {

@@ -5,7 +5,7 @@
 //! trajectory that hits pinned observations exactly, stays within margin
 //! radii around margin observations, and otherwise stays close to the
 //! reference in position, velocity and acceleration. All math in `f64`,
-//! matching the upstream `Eigen` dense/s Sparse<double> pipeline; the
+//! matching the upstream `Eigen` dense/s `Sparse<double>` pipeline; the
 //! sparse operators are small enough (N = frame count) that dense rows and
 //! a dense LU with partial pivoting reproduce `SparseLU` to ~1e-12.
 
