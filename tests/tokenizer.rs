@@ -6,61 +6,14 @@
 //! level, not merely to ardy-mlx's. Skipped with a message when either the
 //! bundle or the golden run is absent.
 
-use std::path::{Path, PathBuf};
-
 use ardy::io::bundle::Bundle;
-use ardy::io::npy::{NpyArray, read_npy_f32};
 use ardy::model::fsq::FsqVaeTransformer;
 use ardy::model::motion_rep::{MotionRep, Stats};
 use ardy::model::nn::{Linear, WeightStore};
 use mlx_rs::Array;
 
-fn bundle_dir() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("ARDY_BUNDLE") {
-        let p = PathBuf::from(p);
-        return p.is_dir().then_some(p);
-    }
-    let p = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../ardy-mlx/checkpoints/ARDY-Core-RP-20FPS-Horizon40");
-    p.is_dir().then_some(p)
-}
-
-fn golden_dir() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("ARDY_GOLDEN") {
-        let p = PathBuf::from(p);
-        return p.is_dir().then_some(p);
-    }
-    let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ardy-mlx/artifacts/golden-run-4s/raw");
-    p.is_dir().then_some(p)
-}
-
-fn npy(dir: &Path, name: &str) -> NpyArray {
-    read_npy_f32(&dir.join(name)).unwrap_or_else(|e| panic!("{name}: {e}"))
-}
-
-/// Host-side copy of an `.npy` payload as an unevaluated-shaped MLX array.
-fn arr(n: &NpyArray) -> Array {
-    let dims: Vec<i32> = n.shape.iter().map(|&d| d as i32).collect();
-    Array::from_slice(&n.data, &dims)
-}
-
-/// Materialize a (possibly strided) view as a flat f32 vector.
-fn flat(a: &Array) -> Vec<f32> {
-    let f = a.reshape(&[-1]).unwrap();
-    f.eval().unwrap();
-    f.as_slice::<f32>().to_vec()
-}
-
-fn assert_close(a: &[f32], b: &[f32], tol: f32, ctx: &str) {
-    assert_eq!(a.len(), b.len(), "{ctx}: length {} vs {}", a.len(), b.len());
-    let max = a
-        .iter()
-        .zip(b)
-        .map(|(x, y)| (x - y).abs())
-        .fold(0.0f32, f32::max);
-    eprintln!("{ctx}: max abs diff = {max:.3e}");
-    assert!(max <= tol, "{ctx}: max abs diff {max:.3e} > {tol:.0e}");
-}
+mod common;
+use common::*;
 
 #[test]
 fn golden_replay_fsq() {

@@ -179,6 +179,165 @@ fn parse_header_dict(path: &Path, header: &str) -> Result<(String, bool, Vec<usi
     Ok((descr, fortran_order, shape))
 }
 
+/// Read every member of an `.npz` archive as f32 arrays.
+///
+/// An `.npz` is a zip whose members are `.npy` files. Only `ZIP_STORED`
+/// (method 0) archives are supported: `numpy.savez` never deflates, and the
+/// golden artifacts were written by it, so a bare local-header walk is enough
+/// — no `flate2`. `numpy.savez` also streams its members: the local header
+/// carries `0xffffffff` sizes and a data descriptor trails the payload, so a
+/// member's true length is taken from its own `.npy` header
+/// ([`npy_data_len`]). The central directory is never parsed.
+///
+/// Member names keep their `.npy` suffix (`"history.npy"`), in archive order.
+pub fn read_npz_f32(path: &Path) -> Result<Vec<(String, NpyArray)>> {
+    let bytes = std::fs::read(path).map_err(|source| Error::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    parse_npz_f32(path, &bytes)
+}
+
+/// Parse `.npz` bytes (see [`read_npz_f32`]).
+pub fn parse_npz_f32(path: &Path, bytes: &[u8]) -> Result<Vec<(String, NpyArray)>> {
+    const LOCAL_SIG: &[u8; 4] = b"PK\x03\x04";
+    const DESCR_SIG: &[u8; 4] = b"PK\x07\x08";
+    let mut out = Vec::new();
+    let mut pos = 0usize;
+    while pos + 30 <= bytes.len() && &bytes[pos..pos + 4] == LOCAL_SIG {
+        let flags = u16::from_le_bytes([bytes[pos + 6], bytes[pos + 7]]);
+        let method = u16::from_le_bytes([bytes[pos + 8], bytes[pos + 9]]);
+        let comp_size = u32::from_le_bytes(bytes[pos + 18..pos + 22].try_into().unwrap()) as usize;
+        let name_len = u16::from_le_bytes([bytes[pos + 26], bytes[pos + 27]]) as usize;
+        let extra_len = u16::from_le_bytes([bytes[pos + 28], bytes[pos + 29]]) as usize;
+        if method != 0 {
+            let name = String::from_utf8_lossy(&bytes[pos + 30..pos + 30 + name_len]);
+            return Err(Error::Npy(format!(
+                "{}: npz member {name:?} is deflated; only numpy.savez \
+                 (ZIP_STORED) archives are supported",
+                path.display()
+            )));
+        }
+        let name_start = pos + 30;
+        let data_start = name_start + name_len + extra_len;
+        // `numpy.savez` streams: header sizes are placeholders and a data
+        // descriptor trails the payload, so the length comes from the .npy
+        // header itself.
+        let payload_len = if comp_size == 0xffff_ffff {
+            if data_start >= bytes.len() {
+                return Err(Error::Npy(format!(
+                    "{}: truncated zip member",
+                    path.display()
+                )));
+            }
+            npy_data_len(&bytes[data_start..], path)?
+        } else {
+            comp_size
+        };
+        if data_start + payload_len > bytes.len() {
+            return Err(Error::Npy(format!(
+                "{}: truncated zip member",
+                path.display()
+            )));
+        }
+        let name = bytes[name_start..name_start + name_len].to_vec();
+        let data = parse_npy_f32(path, &bytes[data_start..data_start + payload_len])?;
+        out.push((
+            String::from_utf8(name).map_err(|_| {
+                Error::Npy(format!("{}: npz member name is not UTF-8", path.display()))
+            })?,
+            data,
+        ));
+
+        let mut next = data_start + payload_len;
+        if flags & 0x08 != 0 {
+            // Skip the data descriptor (crc32 + both sizes), with or without
+            // its `PK\x07\x08` signature.
+            next += if bytes.len() >= next + 4 && &bytes[next..next + 4] == DESCR_SIG {
+                16
+            } else {
+                12
+            };
+        }
+        pos = next;
+    }
+    if out.is_empty() {
+        return Err(Error::Npy(format!(
+            "{}: no ZIP_STORED npy members found",
+            path.display()
+        )));
+    }
+    Ok(out)
+}
+
+/// Byte length of the `.npy` payload starting at `bytes[0]`, derived from its
+/// own header (descr + shape) — the zip-independent way to size a streamed
+/// member.
+fn npy_data_len(bytes: &[u8], path: &Path) -> Result<usize> {
+    if bytes.len() < 10 || &bytes[..6] != b"\x93NUMPY" {
+        return Err(Error::Npy(format!(
+            "{}: npz member is not a numpy .npy file",
+            path.display()
+        )));
+    }
+    let major = bytes[6];
+    let (header_start, header_len): (usize, usize) = match major {
+        1 => (10, u16::from_le_bytes([bytes[8], bytes[9]]) as usize),
+        2 | 3 => (
+            12,
+            u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize,
+        ),
+        v => {
+            return Err(Error::Npy(format!(
+                "{}: unsupported .npy version {v}",
+                path.display()
+            )));
+        }
+    };
+    let header_end = header_start + header_len;
+    if bytes.len() < header_end {
+        return Err(Error::Npy(format!("{}: truncated header", path.display())));
+    }
+    let header = std::str::from_utf8(&bytes[header_start..header_end])
+        .map_err(|e| Error::Npy(format!("{}: header is not UTF-8: {e}", path.display())))?;
+    let (descr, _, shape) = parse_header_dict(path, header)?;
+    let item_size = match descr.as_str() {
+        "|b1" | "?" | "|i1" | "|u1" => 1usize,
+        "<i2" | "<u2" | "<f2" => 2,
+        "<i4" | "<f4" => 4,
+        "<f8" => 8,
+        other => {
+            return Err(Error::Npy(format!(
+                "{}: dtype {other:?} cannot be read as f32",
+                path.display()
+            )));
+        }
+    };
+    Ok(header_end + shape.iter().product::<usize>() * item_size)
+}
+
+/// Read one named member of an `.npz` archive (name without the `.npy`
+/// suffix).
+pub fn read_npz_member_f32(path: &Path, key: &str) -> Result<NpyArray> {
+    parse_npz_member_f32(
+        path,
+        &std::fs::read(path).map_err(|source| Error::Io {
+            path: path.to_path_buf(),
+            source,
+        })?,
+        key,
+    )
+}
+
+/// Parse one named member from `.npz` bytes (see [`read_npz_member_f32`]).
+pub fn parse_npz_member_f32(path: &Path, bytes: &[u8], key: &str) -> Result<NpyArray> {
+    parse_npz_f32(path, bytes)?
+        .into_iter()
+        .find(|(name, _)| name.strip_suffix(".npy") == Some(key))
+        .map(|(_, arr)| arr)
+        .ok_or_else(|| Error::Npy(format!("{}: no npz member {key:?}.npy", path.display())))
+}
+
 /// IEEE 754 binary16 -> f32, without the `half` crate.
 fn half_bits_to_f32(bits: u16) -> f32 {
     let sign = ((bits >> 15) as u32) << 31;
@@ -278,5 +437,90 @@ mod tests {
         assert!(parse_npy_f32(Path::new("x.npy"), &bytes).is_err());
 
         assert!(parse_npy_f32(Path::new("x.npy"), b"garbage").is_err());
+    }
+
+    /// One stored (method 0) zip local header + payload around `npy_bytes`.
+    fn stored_member(name: &str, npy: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(b"PK\x03\x04");
+        out.extend_from_slice(&20u16.to_le_bytes()); // version needed
+        out.extend_from_slice(&0u16.to_le_bytes()); // flags
+        out.extend_from_slice(&0u16.to_le_bytes()); // method: stored
+        out.extend_from_slice(&0u16.to_le_bytes()); // time
+        out.extend_from_slice(&0x2181u16.to_le_bytes()); // date
+        out.extend_from_slice(&0u32.to_le_bytes()); // crc (unchecked here)
+        out.extend_from_slice(&(npy.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(npy.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes()); // extra len
+        out.extend_from_slice(name.as_bytes());
+        out.extend_from_slice(npy);
+        out
+    }
+
+    #[test]
+    fn reads_stored_npz_members() {
+        let member = |name: &str, payload: &[u8]| {
+            let mut b = b"\x93NUMPY\x01\x00".to_vec();
+            let header = format!(
+                "{{'descr': '<f4', 'fortran_order': False, 'shape': ({}), }}",
+                payload.len() / 4
+            );
+            b.extend_from_slice(&(header.len() as u16).to_le_bytes());
+            b.extend_from_slice(header.as_bytes());
+            b.extend_from_slice(payload);
+            stored_member(name, &b)
+        };
+        let mut bytes = member("history.npy", &1.0f32.to_le_bytes());
+        bytes.extend(member("future.npy", &2.0f32.to_le_bytes()));
+
+        let path = Path::new("masks.npz");
+        let members = parse_npz_f32(path, &bytes).unwrap();
+        assert_eq!(members.len(), 2);
+        assert_eq!(members[0].0, "history.npy");
+        assert_eq!(members[0].1.data, vec![1.0]);
+        assert_eq!(members[1].1.data, vec![2.0]);
+
+        let got = parse_npz_member_f32(path, &bytes, "future").unwrap();
+        assert_eq!(got.data, vec![2.0]);
+        assert!(parse_npz_member_f32(path, &bytes, "missing").is_err());
+    }
+
+    #[test]
+    fn reads_streamed_npz_members_with_data_descriptors() {
+        // numpy.savez streams: placeholder sizes, bit-3 flag, descriptor
+        // (signature variant for the first member, bare for the second).
+        let streamed_member = |name: &str, npy: &[u8], sig: bool| {
+            let mut out = stored_member(name, npy);
+            // overwrite sizes with placeholders and set the descriptor flag
+            out[6..8].copy_from_slice(&0x0008u16.to_le_bytes());
+            out[18..22].copy_from_slice(&0xffff_ffffu32.to_le_bytes());
+            out[22..26].copy_from_slice(&0xffff_ffffu32.to_le_bytes());
+            let desc_len = if sig { 16 } else { 12 };
+            let mut desc = vec![0u8; desc_len];
+            if sig {
+                desc[..4].copy_from_slice(b"PK\x07\x08");
+            }
+            desc[desc_len - 12..desc_len - 8].copy_from_slice(&0x1234u32.to_le_bytes());
+            desc[desc_len - 8..desc_len - 4].copy_from_slice(&(npy.len() as u32).to_le_bytes());
+            desc[desc_len - 4..].copy_from_slice(&(npy.len() as u32).to_le_bytes());
+            out.extend_from_slice(&desc);
+            out
+        };
+        let npy = |v: f32| {
+            let header = b"{'descr': '<f4', 'fortran_order': False, 'shape': (1,), }";
+            let mut b = b"\x93NUMPY\x01\x00".to_vec();
+            b.extend_from_slice(&(header.len() as u16).to_le_bytes());
+            b.extend_from_slice(&header[..]);
+            b.extend_from_slice(&v.to_le_bytes());
+            b
+        };
+        let mut bytes = streamed_member("history.npy", &npy(1.0), true);
+        bytes.extend(streamed_member("future.npy", &npy(2.0), false));
+
+        let members = parse_npz_f32(Path::new("masks.npz"), &bytes).unwrap();
+        assert_eq!(members.len(), 2);
+        assert_eq!(members[0].1.data, vec![1.0]);
+        assert_eq!(members[1].1.data, vec![2.0]);
     }
 }

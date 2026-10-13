@@ -168,7 +168,9 @@ fn repeat_diff_at_last(velocity: &Array, lengths: Option<&Array>) -> Result<Arra
     }
     let src_vals = velocity.take_along_axis(&src_nd, 1)?;
     let ar = ops::arange::<i32, i32>(None, t, None)?;
-    let hit = ar.eq(&idx)?; // [B, T] bool
+    // [B, T] bool — explicit shapes: with B > 1 the bare [T] vs [B] pair
+    // cannot broadcast.
+    let hit = ar.reshape(&[1, t])?.eq(&idx.reshape(&[b, 1])?)?;
     let mut hit_shape: Vec<i32> = vec![b, t];
     while hit_shape.len() < velocity.ndim() {
         hit_shape.push(1);
