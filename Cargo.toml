@@ -13,6 +13,7 @@ serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 serde_json = "1"
 thiserror = "2"
+mlx-rs = { version = "0.32.0", features = ["safetensors"] }
 
 [profile.release]
 lto = "thin"

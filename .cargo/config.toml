@@ -1,0 +1,9 @@
+# The mlx-sys build vendors MLX via CMake FetchContent, which clones with
+# git. With global core.autocrlf=true the checked-out shell scripts get CRLF
+# endings and the build dies in make_compiled_preamble.sh. These
+# environment-scoped git overrides force LF checkouts for the vendored fetch
+# without touching the user's global git config.
+[env]
+GIT_CONFIG_COUNT = "1"
+GIT_CONFIG_KEY_0 = "core.autocrlf"
+GIT_CONFIG_VALUE_0 = "false"

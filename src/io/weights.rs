@@ -119,7 +119,7 @@ fn decode_f32(
     let mut out = Vec::with_capacity(data.len() / 4);
     match dtype {
         safetensors::Dtype::F32 => {
-            if data.len() % 4 != 0 {
+            if !data.len().is_multiple_of(4) {
                 return Err(expected(4, data.len()));
             }
             for chunk in data.chunks_exact(4) {
@@ -127,7 +127,7 @@ fn decode_f32(
             }
         }
         safetensors::Dtype::F64 => {
-            if data.len() % 8 != 0 {
+            if !data.len().is_multiple_of(8) {
                 return Err(expected(8, data.len()));
             }
             for chunk in data.chunks_exact(8) {
@@ -137,7 +137,7 @@ fn decode_f32(
             }
         }
         safetensors::Dtype::F16 => {
-            if data.len() % 2 != 0 {
+            if !data.len().is_multiple_of(2) {
                 return Err(expected(2, data.len()));
             }
             for chunk in data.chunks_exact(2) {
@@ -146,7 +146,7 @@ fn decode_f32(
             }
         }
         safetensors::Dtype::BF16 => {
-            if data.len() % 2 != 0 {
+            if !data.len().is_multiple_of(2) {
                 return Err(expected(2, data.len()));
             }
             for chunk in data.chunks_exact(2) {

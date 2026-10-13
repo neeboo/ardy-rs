@@ -208,7 +208,7 @@ fn half_bits_to_f32(bits: u16) -> f32 {
                     e -= 1;
                 }
                 f &= 0x3ff;
-                (sign << 0) | (e << 23) | (f << 13)
+                sign | (e << 23) | (f << 13)
             }
         }
         0x1f => sign | (0xff << 23) | (frac << 13),

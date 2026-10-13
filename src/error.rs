@@ -30,6 +30,16 @@ pub enum Error {
     /// A checkpoint field disagrees with the frozen motion contract.
     #[error("contract: {0}")]
     Contract(String),
+
+    /// An MLX operation (via `mlx-rs`) failed.
+    #[error("mlx: {0}")]
+    Mlx(String),
+}
+
+impl From<mlx_rs::error::Exception> for Error {
+    fn from(e: mlx_rs::error::Exception) -> Self {
+        Error::Mlx(e.to_string())
+    }
 }
 
 /// Crate-wide result alias.
