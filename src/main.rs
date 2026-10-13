@@ -34,6 +34,7 @@ use ardy::model::motion_rep::{MotionRep, Stats};
 use ardy::model::nn::WeightStore;
 use ardy::model::sampler::generate;
 use ardy::model::skeleton::Skeleton;
+use ardy::postprocess::{MotionConstraints, post_process_motion};
 use ardy::{Error, Result};
 use mlx_rs::random;
 use mlx_rs::{Array, ops};
@@ -55,6 +56,7 @@ struct Args {
     noise: Vec<PathBuf>,
     out: PathBuf,
     golden: Option<PathBuf>,
+    postprocess: bool,
 }
 
 fn parse_args() -> Result<Args> {
@@ -69,6 +71,7 @@ fn parse_args() -> Result<Args> {
         noise: Vec::new(),
         out: PathBuf::from("out"),
         golden: None,
+        postprocess: false,
     };
 
     let argv: Vec<String> = std::env::args().skip(1).collect();
@@ -135,6 +138,7 @@ fn parse_args() -> Result<Args> {
             }
             "--out" => args.out = value(&mut i, &argv, "out")?.into(),
             "--golden" => args.golden = Some(value(&mut i, &argv, "golden")?.into()),
+            "--postprocess" => args.postprocess = true,
             "--help" | "-h" => {
                 print_help();
                 std::process::exit(0);
@@ -182,6 +186,11 @@ OPTIONS:
                           Must be the last flag on the command line.
   --out DIR               output directory (default ./out)
   --golden FILE.npz       compare outputs against a golden archive
+  --postprocess           run the MotionCorrection IK/trajectory postpass on
+                          the decoded joints (upstream defaults: contact
+                          threshold 0.5, root margin 0.04, no constraints).
+                          Default off — the golden contract runs without it,
+                          so --golden and --postprocess don't combine.
   -h, --help"
     );
 }
@@ -289,40 +298,123 @@ fn run(args: &Args) -> Result<()> {
     let decoded = inverse(&mr, Skeleton::core(), &features, true)?;
 
     let f32_of = |a: &Array| a.as_dtype(mlx_rs::Dtype::Float32).map_err(Error::from);
-    let outputs = vec![
-        Output {
-            name: "motion_normalized",
-            array: features,
-        },
-        Output {
-            name: "local_rot_mats",
-            array: decoded.local_rot_mats.clone(),
-        },
-        Output {
-            name: "global_rot_mats",
-            array: decoded.global_rot_mats.clone(),
-        },
-        Output {
-            name: "posed_joints",
-            array: decoded.posed_joints.clone(),
-        },
-        Output {
-            name: "root_positions",
-            array: decoded.root_positions.clone(),
-        },
-        Output {
-            name: "smooth_root_pos",
-            array: decoded.root_positions.clone(),
-        },
-        Output {
-            name: "foot_contacts",
-            array: f32_of(&decoded.foot_contacts)?,
-        },
-        Output {
-            name: "global_root_heading",
-            array: decoded.global_root_heading.clone(),
-        },
-    ];
+
+    // Materialize an mlx Array as host-side f32 (cast + eval).
+    let eval_f32 = |a: &Array| -> Result<(Vec<usize>, Vec<f32>)> {
+        let flat = a.as_dtype(mlx_rs::Dtype::Float32)?.reshape(&[-1])?;
+        flat.eval().map_err(Error::from)?;
+        let shape: Vec<usize> = a.shape().iter().map(|&d| d as usize).collect();
+        Ok((shape, flat.as_slice::<f32>().to_vec()))
+    };
+
+    let outputs = if args.postprocess {
+        // Upstream `post_process_motion` defaults (ardy/postprocess.py).
+        // (Plain comments: doc comments aren't allowed on fn-body consts.)
+        const CONTACT_THRESHOLD: f32 = 0.5;
+        const ROOT_MARGIN: f32 = 0.04;
+        let skel = Skeleton::core();
+        let (mat_shape, mats) = eval_f32(&decoded.local_rot_mats)?; // [B,T,J,3,3]
+        let (_, root) = eval_f32(&decoded.root_positions)?; // [B,T,3]
+        let (_, contacts) = eval_f32(&decoded.foot_contacts)?; // [B,T,4]
+        let (b, t, j) = (mat_shape[0], mat_shape[1], mat_shape[2]);
+        let mut corrected_mats = Vec::with_capacity(mats.len());
+        let mut corrected_root = Vec::with_capacity(root.len());
+        let mut posed = Vec::with_capacity(b * t * j * 3);
+        let mut global = Vec::with_capacity(mats.len());
+        for bi in 0..b {
+            let mut m = mats[bi * t * j * 9..(bi + 1) * t * j * 9].to_vec();
+            let mut r = root[bi * t * 3..(bi + 1) * t * 3].to_vec();
+            let c = &contacts[bi * t * 4..(bi + 1) * t * 4];
+            let cons = MotionConstraints::unconstrained(t, j);
+            let (cm, cr, cp, cg) = post_process_motion(
+                &mut m,
+                &mut r,
+                c,
+                skel,
+                &cons,
+                CONTACT_THRESHOLD,
+                ROOT_MARGIN,
+            )?;
+            corrected_mats.extend(cm);
+            corrected_root.extend(cr);
+            posed.extend(cp);
+            global.extend(cg);
+        }
+        eprintln!("postprocess: MotionCorrection applied (unconstrained)");
+        let mk = |data: Vec<f32>, shape: Vec<usize>| {
+            Array::from_slice(&data, &shape.iter().map(|&d| d as i32).collect::<Vec<_>>())
+        };
+        let mats_shape = vec![b, t, j, 3, 3];
+        vec![
+            Output {
+                name: "motion_normalized",
+                array: features.clone(),
+            },
+            Output {
+                name: "local_rot_mats",
+                array: mk(corrected_mats, mats_shape.clone()),
+            },
+            Output {
+                name: "global_rot_mats",
+                array: mk(global, mats_shape),
+            },
+            Output {
+                name: "posed_joints",
+                array: mk(posed, vec![b, t, j, 3]),
+            },
+            Output {
+                name: "root_positions",
+                array: mk(corrected_root.clone(), vec![b, t, 3]),
+            },
+            Output {
+                name: "smooth_root_pos",
+                array: mk(corrected_root, vec![b, t, 3]),
+            },
+            Output {
+                name: "foot_contacts",
+                array: f32_of(&decoded.foot_contacts)?,
+            },
+            Output {
+                name: "global_root_heading",
+                array: decoded.global_root_heading.clone(),
+            },
+        ]
+    } else {
+        vec![
+            Output {
+                name: "motion_normalized",
+                array: features,
+            },
+            Output {
+                name: "local_rot_mats",
+                array: decoded.local_rot_mats.clone(),
+            },
+            Output {
+                name: "global_rot_mats",
+                array: decoded.global_rot_mats.clone(),
+            },
+            Output {
+                name: "posed_joints",
+                array: decoded.posed_joints.clone(),
+            },
+            Output {
+                name: "root_positions",
+                array: decoded.root_positions.clone(),
+            },
+            Output {
+                name: "smooth_root_pos",
+                array: decoded.root_positions.clone(),
+            },
+            Output {
+                name: "foot_contacts",
+                array: f32_of(&decoded.foot_contacts)?,
+            },
+            Output {
+                name: "global_root_heading",
+                array: decoded.global_root_heading.clone(),
+            },
+        ]
+    };
 
     std::fs::create_dir_all(&args.out).map_err(|source| Error::Io {
         path: args.out.clone(),

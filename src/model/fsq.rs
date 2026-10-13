@@ -35,6 +35,8 @@ use crate::Result;
 
 /// `FSQ(levels=[64]*128)` and `FSQ.bound`'s default eps.
 pub const FSQ_LEVELS: usize = 64;
+/// Width of one quantized token (`levels = [64] * 128`).
+pub const FSQ_TOKEN_DIM: usize = 128;
 /// `FSQ.bound`'s default eps.
 pub const FSQ_EPS: f64 = 1e-3;
 
@@ -107,7 +109,6 @@ pub fn causal_mask(seq_len: usize) -> Array {
 pub struct FsqVaeTransformer<'a> {
     motion_rep: &'a MotionRep,
     num_frames_per_token: usize,
-    latent_dim: usize,
     causal_encoder: bool,
     causal_decoder: bool,
 
@@ -137,7 +138,7 @@ impl<'a> FsqVaeTransformer<'a> {
     /// non-pre-norm (`TransformerEncoder`'s Python default), causal both ways.
     pub fn new(store: &mut WeightStore, motion_rep: &'a MotionRep, prefix: &str) -> Result<Self> {
         let num_frames_per_token = 4;
-        let latent_dim = 512;
+        let width = 512;
         let num_layers = 8;
         let num_heads = 4;
         let norm_first = false;
@@ -148,7 +149,7 @@ impl<'a> FsqVaeTransformer<'a> {
             store,
             &format!("{prefix}.encoder.seqTransEncoder"),
             num_layers,
-            latent_dim,
+            width,
             num_heads,
             norm_first,
         )?;
@@ -165,7 +166,7 @@ impl<'a> FsqVaeTransformer<'a> {
             store,
             &format!("{prefix}.decoder.seqTransEncoder"),
             num_layers,
-            latent_dim,
+            width,
             num_heads,
             norm_first,
         )?;
@@ -176,7 +177,6 @@ impl<'a> FsqVaeTransformer<'a> {
         Ok(Self {
             motion_rep,
             num_frames_per_token,
-            latent_dim,
             causal_encoder: true,
             causal_decoder: true,
             enc_input_proj,
@@ -187,15 +187,15 @@ impl<'a> FsqVaeTransformer<'a> {
             dec_layers,
             dec_output_proj,
             has_target_cond,
-            pe: PositionalEncoding::new(latent_dim, 5000),
+            pe: PositionalEncoding::new(width, 5000),
             post_quantization_stats: None,
             pre_quantization_stats: None,
         })
     }
 
-    /// Width of a quantized token embedding (128).
+    /// Width of a quantized token embedding (`FSQ_TOKEN_DIM`, 128).
     pub fn latent_dim(&self) -> usize {
-        self.latent_dim
+        FSQ_TOKEN_DIM
     }
 
     /// Frames folded into one token (4).

@@ -312,6 +312,32 @@ impl Skeleton {
         })
     }
 
+    /// Working-rig parent-relative offset for joint `j > 0`
+    /// (`postprocess.py::create_working_rig_from_skeleton`:
+    /// `neutral[j] - neutral[parent]`, cast to float32).
+    pub fn core_rig_offset(&self, j: usize) -> [f32; 3] {
+        let p = self.joint_parents[j] as usize;
+        let n = &CORE_NEUTRAL_JOINTS;
+        [
+            (n[j][0] - n[p][0]) as f32,
+            (n[j][1] - n[p][1]) as f32,
+            (n[j][2] - n[p][2]) as f32,
+        ]
+    }
+
+    /// Working-rig root translation: `neutral[0] + [0, -toe_height + 0.007,
+    /// 0]` with `toe_height = min neutral y` — the rig sits just above the
+    /// ground so contact IK's `minHeight` is positive.
+    pub fn core_rig_root_translation(&self) -> [f32; 3] {
+        let n = &CORE_NEUTRAL_JOINTS;
+        let toe_height = n.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min);
+        [
+            n[0][0] as f32,
+            (n[0][1] - toe_height + 0.007) as f32,
+            n[0][2] as f32,
+        ]
+    }
+
     /// The Core (27-joint) skeleton used by every released Core checkpoint.
     pub fn core() -> &'static Skeleton {
         static CORE: OnceLock<Skeleton> = OnceLock::new();
